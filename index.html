@@ -1,38 +1,13 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="robots" content="noindex">
-  <title>Redirecting…</title>
-  <style>
-    body{font:16px system-ui,sans-serif;max-width:650px;margin:12vh auto;padding:24px;line-height:1.5;color:#20242a}
-    main{border:1px solid #d7dce2;border-radius:12px;padding:22px}
-    a,button{font:inherit}button{padding:10px 16px;border:0;border-radius:7px;background:#20242a;color:white;cursor:pointer}
-    small{color:#555}
-  </style>
-</head>
-<body>
-<main>
-  <h1>Welcome</h1>
-  <p>If you continue, the site records your IP address, a random visitor ID, browser and device details available to your browser, display settings, language and timezone, connection details where available, approximate country, region and city derived from IP address, network provider information where available, pages visited and navigation order, session and visit times, selected interface clicks, page-load performance, and technical errors. This information is stored privately for analytics and troubleshooting and is automatically deleted after 90 days.</p>
-  <p>No precise GPS location, camera, microphone, or contacts are collected.</p>
-  <p><small>No passwords, form contents, precise GPS location, camera, microphone, contacts, or covert device fingerprint are collected. Continuing means you acknowledge this collection notice.</small></p>
-  <button id="continue">Continue to website</button>
-</main>
-<script>
-  const destination = "https://aryanavery1488-prog.github.io/aryanavery1488.github.io/" + location.hash;
-  document.getElementById("continue").addEventListener("click", () => {
-    const script = document.createElement("script");
-    script.src = "/visitor-tracker.js";
-    script.onload = () => {
-      const pending = window.__visitorTrackingPromise;
-      if (pending) pending.finally(() => location.replace(destination));
-      else location.replace(destination);
-    };
-    script.onerror = () => location.replace(destination);
-    document.head.appendChild(script);
-  });
-</script>
-</body>
-</html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Visitor Index — Continue</title>
+<style>body{font:16px/1.55 system-ui,sans-serif;max-width:760px;margin:10vh auto;padding:24px;color:#20242a;background:#f5f6f8}main{background:#fff;border:1px solid #d7dce2;border-radius:14px;padding:24px}button{font:inherit;padding:10px 16px;border:0;border-radius:8px;background:#20242a;color:#fff;cursor:pointer}small{color:#555}</style></head><body><main>
+<h1>Welcome</h1>
+<p>If you accept, this site records your IP address, a random visitor ID, browser and device details available to your browser, display settings, language and timezone, connection details where available, approximate country, region and city derived from IP address, network ASN, pages visited, referral and campaign source where present, session and visit times, scroll-depth milestones, selected explicitly labelled interface actions, page-load performance measurements and technical errors. This information is used for analytics and troubleshooting, stored privately, and automatically deleted after 90 days.</p>
+<p>Core Web Vitals and page-performance measurements help diagnose loading, layout stability and interaction responsiveness. Campaign/referral values are limited to URL attribution parameters and referring host.</p>
+<p><small>No passwords, form contents, keystrokes, arbitrary button text, precise GPS location, camera, microphone, contacts or covert device fingerprinting are collected. Declining will not affect your use of the site.</small></p>
+<button id="continue">Accept and continue</button> <button id="decline" style="background:#606a78">Decline and continue</button>
+</main><script>
+const destination="https://aryanavery1488-prog.github.io/aryanavery1488.github.io/"+location.hash;
+function go(accepted){if(accepted){const s=document.createElement("script");s.src="/visitor-tracker.js";s.onload=()=>{const p=window.__visitorTrackingPromise;if(p)p.finally(()=>location.replace(destination));else location.replace(destination)};s.onerror=()=>location.replace(destination);document.head.appendChild(s)}else location.replace(destination)}
+document.getElementById("continue").onclick=()=>go(true);document.getElementById("decline").onclick=()=>go(false);
+</script></body></html>

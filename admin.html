@@ -94,9 +94,13 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;
 
     const view = document.createElement("button");
     view.textContent = "View";
-    view.addEventListener("click", () => {
+    view.addEventListener("click", async () => {
       document.getElementById("detail").hidden = false;
       document.getElementById("record").textContent = JSON.stringify(r, null, 2);
+      try {
+        const data = await api("/api/admin/visitors/" + encodeURIComponent(r.visitor_id) + "/events");
+        document.getElementById("events").textContent = JSON.stringify(data.events || [], null, 2);
+      } catch (e) { document.getElementById("events").textContent = e.message; }
     });
 
     const del = document.createElement("button");

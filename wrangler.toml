@@ -6,7 +6,7 @@ compatibility_date = "2026-11-12"
 [[d1_databases]]
 binding = "DB"
 database_name = "visitor-index"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "50506a49-82aa-4180-b0b6-034019e05301"
 migrations_dir = "migrations"
 
 [triggers]

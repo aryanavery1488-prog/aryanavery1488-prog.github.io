@@ -23,7 +23,13 @@
 <script src="/visitor-tracker.js"></script>
 <script>
   const destination = "https://aryanavery1488-prog.github.io/aryanavery1488.github.io/" + location.hash;
-  document.getElementById("continue").addEventListener("click", () => location.replace(destination));
+  document.getElementById("continue").addEventListener("click", () => {
+    const script = document.createElement("script");
+    script.src = "/visitor-tracker.js";
+    script.onload = () => setTimeout(() => location.replace(destination), 400);
+    script.onerror = () => location.replace(destination);
+    document.head.appendChild(script);
+  });
 </script>
 </body>
 </html>

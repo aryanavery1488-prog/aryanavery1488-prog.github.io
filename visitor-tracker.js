@@ -168,7 +168,7 @@
 
   const visitPromise = post("/api/visit", {
     page: safePage(location.href),
-    referrer: safePage(document.referrer || location.href),
+    referrer: document.referrer ? safePage(document.referrer) : null,
     language: locale.language,
     timezone: locale.timezone,
     screen: { width: screen.width, height: screen.height },

@@ -67,6 +67,7 @@ function visitorRecord(row) {
     first_seen: row.first_seen,
     last_seen: row.last_seen,
     visits: row.visits,
+    sessions: row.session_count || 0,
     ip_address: row.ip_address,
     user_agent: row.user_agent,
     page: row.page,
@@ -184,7 +185,8 @@ export default {
           "page_view", "page_exit", "tab_hidden", "tab_visible", "ui_click",
           "javascript_error", "unhandled_rejection", "resource_error",
           "browser_details", "page_performance", "network_change", "api_error",
-          "web_vital", "scroll_depth"
+          "web_vital", "scroll_depth", "feature_support", "viewport_change",
+          "long_task", "slow_resource", "session_start", "session_end"
         ];
         if (!eventTypes.includes(body.event_type)) {
           return json({ error: "Unsupported event" }, 400, headers);
@@ -286,7 +288,9 @@ export default {
         ).bind(...args).first();
 
         const rows = (await env.DB.prepare(
-          "SELECT * FROM visitors" + clause +
+          "SELECT visitors.*, (SELECT COUNT(DISTINCT session_id) FROM visitor_events " +
+          "WHERE visitor_events.visitor_id = visitors.visitor_id) AS session_count " +
+          "FROM visitors" + clause +
           " ORDER BY " + order + " " + direction + ", visitor_id ASC LIMIT ? OFFSET ?"
         ).bind(...args, limit, offset).all()).results || [];
 
@@ -319,7 +323,8 @@ export default {
 
         const [
           pages, events, countries, browsers, devices, systems, campaigns,
-          referrers, sessions, errors, vitals, scrollDepth, recentErrors
+          referrers, sessions, errors, vitals, scrollDepth, recentErrors,
+          navigationPaths, featureSupport, slowResources, longTasks
         ] = await Promise.all([
           env.DB.prepare(
             "SELECT page, COUNT(*) AS views, COUNT(DISTINCT visitor_id) AS visitors " +
@@ -400,7 +405,37 @@ export default {
             "FROM visitor_events WHERE event_type IN " +
             "('javascript_error', 'unhandled_rejection', 'resource_error', 'api_error') " +
             "AND occurred_at >= ? ORDER BY occurred_at DESC LIMIT 30"
-          ).bind(since).all()
+          ).bind(since).all(),
+
+          env.DB.prepare(
+            "SELECT COALESCE(json_extract(details_json, '$.previous_page'), 'Entry / direct') || " +
+            "' → ' || COALESCE(page, 'Unknown page') AS path, COUNT(*) AS transitions " +
+            "FROM visitor_events WHERE event_type = 'page_view' AND occurred_at >= ? " +
+            "AND json_extract(details_json, '$.previous_page') IS NOT NULL " +
+            "GROUP BY path ORDER BY transitions DESC LIMIT 15"
+          ).bind(since).all(),
+
+          env.DB.prepare(
+            "SELECT COUNT(*) AS samples, " +
+            "SUM(CASE WHEN json_extract(details_json, '$.features.performance_observer') = 1 THEN 1 ELSE 0 END) AS performance_observer, " +
+            "SUM(CASE WHEN json_extract(details_json, '$.features.resize_observer') = 1 THEN 1 ELSE 0 END) AS resize_observer, " +
+            "SUM(CASE WHEN json_extract(details_json, '$.features.intersection_observer') = 1 THEN 1 ELSE 0 END) AS intersection_observer, " +
+            "SUM(CASE WHEN json_extract(details_json, '$.features.navigation_timing') = 1 THEN 1 ELSE 0 END) AS navigation_timing, " +
+            "SUM(CASE WHEN json_extract(details_json, '$.features.service_worker_api') = 1 THEN 1 ELSE 0 END) AS service_worker_api " +
+            "FROM visitor_events WHERE event_type = 'feature_support' AND occurred_at >= ?"
+          ).bind(since).first(),
+
+          env.DB.prepare(
+            "SELECT id, visitor_id, session_id, page, occurred_at, details_json " +
+            "FROM visitor_events WHERE event_type = 'slow_resource' AND occurred_at >= ? " +
+            "ORDER BY occurred_at DESC LIMIT 20"
+          ).bind(since).all(),
+
+          env.DB.prepare(
+            "SELECT COUNT(*) AS events, COALESCE(ROUND(AVG(CAST(json_extract(details_json, '$.duration_ms') AS REAL)), 1), 0) AS average_ms, " +
+            "COALESCE(MAX(CAST(json_extract(details_json, '$.duration_ms') AS REAL)), 0) AS maximum_ms " +
+            "FROM visitor_events WHERE event_type = 'long_task' AND occurred_at >= ?"
+          ).bind(since).first()
         ]);
 
         return json({
@@ -417,7 +452,11 @@ export default {
           errors: errors.results || [],
           web_vitals: vitals.results || [],
           scroll_depth: scrollDepth.results || [],
-          recent_errors: (recentErrors.results || []).map(eventRecord)
+          recent_errors: (recentErrors.results || []).map(eventRecord),
+          navigation_paths: navigationPaths.results || [],
+          feature_support: featureSupport || {},
+          slow_resources: (slowResources.results || []).map(eventRecord),
+          long_tasks: longTasks || { events: 0, average_ms: 0, maximum_ms: 0 }
         }, 200, headers);
       }
 

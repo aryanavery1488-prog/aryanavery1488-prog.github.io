@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Visitor Index — Admin</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui,sans-serif;background:#101318;color:#edf0f4}
+body{max-width:1100px;margin:40px auto;padding:0 18px}h1{font-size:26px}
+.panel{background:#1a2029;border:1px solid #303a48;border-radius:12px;padding:18px;margin:16px 0}
+input,button{font:inherit;border-radius:7px;padding:10px;border:1px solid #465366;background:#111720;color:inherit}
+input{width:min(100%,520px);box-sizing:border-box}button{cursor:pointer;background:#27384e}
+button:hover{background:#344b67}.muted{color:#aab5c4}.error{color:#ff9c9c}
+table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px;border-bottom:1px solid #303a48;vertical-align:top}
+td{overflow-wrap:anywhere}.actions{display:flex;gap:8px;flex-wrap:wrap}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;border-radius:8px}
+@media(max-width:700px){table{font-size:12px}th,td{padding:6px}}
+</style>
+</head>
+<body>
+<h1>Visitor Index</h1>
+<p class="muted">Private administration interface. Visitor data is retrieved from the protected Cloudflare Worker.</p>
+<section class="panel">
+  <label for="token">Admin access token</label><br><br>
+  <input id="token" type="password" autocomplete="current-password" placeholder="Enter your Worker ADMIN_TOKEN">
+  <div class="actions" style="margin-top:12px">
+    <button id="load">Load visitors</button><button id="export">Export JSON</button><button id="logout">Clear token</button>
+  </div>
+  <p id="status" class="muted" role="status">Not connected.</p>
+</section>
+<section class="panel">
+  <div id="stats" class="muted">No data loaded.</div>
+  <div style="overflow-x:auto"><table><thead><tr><th>Visitor ID</th><th>First seen</th><th>Last seen</th><th>Visits</th><th>IP address</th><th>Device</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+<section class="panel" id="detail" hidden><h2>Visitor record</h2><pre id="record"></pre></section>
+<script>
+(() => {
+  const API = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+  const token = document.getElementById("token");
+  const status = document.getElementById("status");
+  const rows = document.getElementById("rows");
+  const stats = document.getElementById("stats");
+  let records = [];
+  const headers = () => ({ "Authorization": "Bearer " + token.value.trim() });
+
+  async function api(path, options={}) {
+    if (!token.value.trim()) throw new Error("Enter the admin token first.");
+    const response = await fetch(API + path, { ...options, headers: { ...headers(), ...(options.headers || {}) }, cache:"no-store" });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || ("Request failed: " + response.status));
+    return body;
+  }
+  function cell(value) { const td=document.createElement("td"); td.textContent=value == null ? "—" : String(value); return td; }
+
+  async function load() {
+    status.textContent = "Loading…"; status.className="muted";
+    try {
+      const data = await api("/api/admin/visitors");
+      records = data.visitors || [];
+      rows.replaceChildren();
+      for (const r of records) {
+        const tr=document.createElement("tr");
+        tr.append(cell(r.visitor_id),cell(r.first_seen),cell(r.last_seen),cell(r.visits),cell(r.ip_address),cell(r.user_agent));
+        const td=document.createElement("td"), group=document.createElement("div"); group.className="actions";
+        const view=document.createElement("button"); view.textContent="View";
+        view.addEventListener("click",()=>{document.getElementById("detail").hidden=false;document.getElementById("record").textContent=JSON.stringify(r,null,2);});
+        const del=document.createElement("button"); del.textContent="Delete";
+        del.addEventListener("click",async()=>{if(!confirm("Permanently delete this visitor record?"))return;try{await api("/api/admin/visitors/"+encodeURIComponent(r.visitor_id),{method:"DELETE"});await load();}catch(e){status.textContent=e.message;status.className="error";}});
+        group.append(view,del);td.append(group);tr.append(td);rows.append(tr);
+      }
+      stats.textContent = records.length + " visitor records (records older than 90 days are automatically removed).";
+      status.textContent = "Connected."; 
+    } catch(e) { status.textContent=e.message; status.className="error"; }
+  }
+  document.getElementById("load").addEventListener("click",load);
+  document.getElementById("logout").addEventListener("click",()=>{token.value="";records=[];rows.replaceChildren();stats.textContent="No data loaded.";status.textContent="Token cleared.";});
+  document.getElementById("export").addEventListener("click",()=>{if(!records.length){status.textContent="Load records before exporting.";return;}const blob=new Blob([JSON.stringify(records,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="visitor-index-export.json";a.click();URL.revokeObjectURL(url);});
+})();
+</script>
+</body>
+</html>

@@ -186,7 +186,7 @@ export default {
           "javascript_error", "unhandled_rejection", "resource_error",
           "browser_details", "page_performance", "network_change", "api_error",
           "web_vital", "scroll_depth", "feature_support", "viewport_change",
-          "long_task", "slow_resource", "session_start", "session_end"
+          "long_task", "slow_resource", "session_start", "session_end", "environment_diagnostics"
         ];
         if (!eventTypes.includes(body.event_type)) {
           return json({ error: "Unsupported event" }, 400, headers);
@@ -324,7 +324,7 @@ export default {
         const [
           pages, events, countries, browsers, devices, systems, campaigns,
           referrers, sessions, errors, vitals, scrollDepth, recentErrors,
-          navigationPaths, featureSupport, slowResources, longTasks
+          navigationPaths, featureSupport, slowResources, longTasks, environmentDiagnostics
         ] = await Promise.all([
           env.DB.prepare(
             "SELECT page, COUNT(*) AS views, COUNT(DISTINCT visitor_id) AS visitors " +
@@ -435,7 +435,13 @@ export default {
             "SELECT COUNT(*) AS events, COALESCE(ROUND(AVG(CAST(json_extract(details_json, '$.duration_ms') AS REAL)), 1), 0) AS average_ms, " +
             "COALESCE(MAX(CAST(json_extract(details_json, '$.duration_ms') AS REAL)), 0) AS maximum_ms " +
             "FROM visitor_events WHERE event_type = 'long_task' AND occurred_at >= ?"
-          ).bind(since).first()
+          ).bind(since).first(),
+
+          env.DB.prepare(
+            "SELECT id, visitor_id, session_id, page, occurred_at, details_json " +
+            "FROM visitor_events WHERE event_type = 'environment_diagnostics' AND occurred_at >= ? " +
+            "ORDER BY occurred_at DESC LIMIT 30"
+          ).bind(since).all()
         ]);
 
         return json({
@@ -456,7 +462,8 @@ export default {
           navigation_paths: navigationPaths.results || [],
           feature_support: featureSupport || {},
           slow_resources: (slowResources.results || []).map(eventRecord),
-          long_tasks: longTasks || { events: 0, average_ms: 0, maximum_ms: 0 }
+          long_tasks: longTasks || { events: 0, average_ms: 0, maximum_ms: 0 },
+          environment_diagnostics: (environmentDiagnostics.results || []).map(eventRecord)
         }, 200, headers);
       }
 

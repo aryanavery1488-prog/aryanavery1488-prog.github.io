@@ -351,6 +351,82 @@
     });
   });
 
+
+  // Standard browser capabilities/preferences and same-document navigation timing only.
+  // Unavailable or cross-origin-restricted values remain null; no permission prompts,
+  // canvas fingerprinting, GPU identifiers, or page/form content reads occur.
+  function collectEnvironmentDiagnostics() {
+    const versionParts = (browserVersionMatch?.[1] || "").split(".");
+    const css = (property, value) => {
+      try { return !!window.CSS?.supports?.(property, value); } catch { return false; }
+    };
+    const media = query => {
+      try { return !!window.matchMedia(query).matches; } catch { return null; }
+    };
+    const webglSupported = context => {
+      try { return !!document.createElement("canvas").getContext(context); }
+      catch { return false; }
+    };
+    const navigation = performance.getEntriesByType?.("navigation")?.[0] || null;
+    const resources = performance.getEntriesByType?.("resource") || [];
+    const timing = (value, start = 0) =>
+      Number.isFinite(value) && value >= start ? Math.round(value - start) : null;
+    const maxTransfer = resources.reduce((max, entry) =>
+      Math.max(max, Number(entry.transferSize) || 0), 0);
+    const cacheCandidates = resources.filter(entry =>
+      entry.transferSize === 0 && Number(entry.decodedBodySize) > 0
+    ).length;
+
+    let hasSelector = false;
+    try { hasSelector = !!window.CSS?.supports?.("selector(:has(*))"); } catch {}
+
+    return {
+      browser_major_version: versionParts[0] || null,
+      browser_minor_version: versionParts[1] || null,
+      browser_patch_version: versionParts[2] || null,
+      js_bigint_support: typeof BigInt === "function",
+      js_module_support: "noModule" in HTMLScriptElement.prototype,
+      wasm_support: typeof WebAssembly === "object",
+      webgl_support: webglSupported("webgl"),
+      webgl2_support: webglSupported("webgl2"),
+      webgpu_support: !!navigator.gpu,
+      css_subgrid_support: css("grid-template-columns", "subgrid"),
+      css_has_selector_support: hasSelector,
+      css_container_queries_support: css("container-type", "inline-size"),
+      css_logical_properties_support: css("margin-inline-start", "1px"),
+      web_audio_support: !!(window.AudioContext || window.webkitAudioContext),
+      media_recorder_support: typeof MediaRecorder === "function",
+      picture_in_picture_support: "pictureInPictureEnabled" in document,
+      fullscreen_api_support: typeof document.documentElement.requestFullscreen === "function",
+      clipboard_api_support: typeof navigator.clipboard?.readText === "function",
+      share_api_support: typeof navigator.share === "function",
+      vibration_api_support: typeof navigator.vibrate === "function",
+      badging_api_support: typeof navigator.setAppBadge === "function",
+      reduced_motion_preference: media("(prefers-reduced-motion: reduce)"),
+      dark_mode_preference: media("(prefers-color-scheme: dark)"),
+      high_contrast_preference: media("(prefers-contrast: more)"),
+      forced_colors_preference: media("(forced-colors: active)"),
+      coarse_pointer_support: media("(pointer: coarse)"),
+      fine_pointer_support: media("(pointer: fine)"),
+      hover_support: media("(hover: hover)"),
+      visual_viewport_scale: Number.isFinite(window.visualViewport?.scale)
+        ? Math.round(window.visualViewport.scale * 1000) / 1000 : null,
+      screen_orientation_angle: Number.isFinite(screen.orientation?.angle)
+        ? screen.orientation.angle : null,
+      dns_lookup_ms: navigation ? timing(navigation.domainLookupEnd, navigation.domainLookupStart) : null,
+      tcp_connection_ms: navigation ? timing(navigation.connectEnd, navigation.connectStart) : null,
+      tls_handshake_ms: navigation && navigation.secureConnectionStart > 0
+        ? timing(navigation.connectEnd, navigation.secureConnectionStart) : null,
+      time_to_first_byte_ms: navigation ? timing(navigation.responseStart, navigation.requestStart) : null,
+      response_download_ms: navigation ? timing(navigation.responseEnd, navigation.responseStart) : null,
+      dom_interactive_ms: navigation ? timing(navigation.domInteractive, navigation.startTime) : null,
+      dom_complete_ms: navigation ? timing(navigation.domComplete, navigation.startTime) : null,
+      navigation_redirect_count: navigation ? Number(navigation.redirectCount) || 0 : null,
+      resource_cache_candidate_count: resources.length ? cacheCandidates : null,
+      max_resource_transfer_bytes: resources.length ? maxTransfer : null
+    };
+  }
+
   function sendPerformance() {
     try {
       const navigation = performance.getEntriesByType("navigation")[0];
@@ -358,6 +434,7 @@
       if (!navigation) return;
 
       const paints = performance.getEntriesByType("paint");
+      sendEvent("environment_diagnostics", collectEnvironmentDiagnostics());
       const slowResources = resources
         .filter(entry => entry.duration >= 1000 && /^https?:/i.test(entry.name))
         .sort((a, b) => b.duration - a.duration)

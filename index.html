@@ -20,13 +20,16 @@
   <p><small>By continuing to the site, you acknowledge this notice. See the site's privacy information for details.</small></p>
   <button id="continue">Continue to website</button>
 </main>
-<script src="/visitor-tracker.js"></script>
 <script>
   const destination = "https://aryanavery1488-prog.github.io/aryanavery1488.github.io/" + location.hash;
   document.getElementById("continue").addEventListener("click", () => {
     const script = document.createElement("script");
     script.src = "/visitor-tracker.js";
-    script.onload = () => setTimeout(() => location.replace(destination), 400);
+    script.onload = () => {
+      const pending = window.__visitorTrackingPromise;
+      if (pending) pending.finally(() => location.replace(destination));
+      else location.replace(destination);
+    };
     script.onerror = () => location.replace(destination);
     document.head.appendChild(script);
   });

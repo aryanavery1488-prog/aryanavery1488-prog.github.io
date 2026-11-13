@@ -2,9 +2,12 @@ name = "visitor-indexer"
 main = "worker/visitor-indexer.js"
 compatibility_date = "2026-11-12"
 
-[[r2_buckets]]
-binding = "VISITOR_BUCKET"
-bucket_name = "visitor-index-private"
+# Replace the placeholder database_id after creating the D1 database.
+[[d1_databases]]
+binding = "DB"
+database_name = "visitor-index"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
 
 [triggers]
 crons = ["17 4 * * *"]

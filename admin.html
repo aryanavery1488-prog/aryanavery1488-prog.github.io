@@ -11,7 +11,8 @@ body{max-width:1100px;margin:40px auto;padding:0 18px}h1{font-size:26px}
 .panel{background:#1a2029;border:1px solid #303a48;border-radius:12px;padding:18px;margin:16px 0}
 input,button{font:inherit;border-radius:7px;padding:10px;border:1px solid #465366;background:#111720;color:inherit}
 input{width:min(100%,520px);box-sizing:border-box}button{cursor:pointer;background:#27384e}
-button:hover{background:#344b67}.muted{color:#aab5c4}.error{color:#ff9c9c}
+button:hover{background:#344b67}button:disabled{opacity:.45;cursor:not-allowed}
+.muted{color:#aab5c4}.error{color:#ff9c9c}
 table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px;border-bottom:1px solid #303a48;vertical-align:top}
 td{overflow-wrap:anywhere}.actions{display:flex;gap:8px;flex-wrap:wrap}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;border-radius:8px}
@@ -20,18 +21,21 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;
 </head>
 <body>
 <h1>Visitor Index</h1>
-<p class="muted">Private administration interface. Visitor data is retrieved from the protected Cloudflare Worker.</p>
+<p class="muted">Private administration interface. Records are retrieved from the protected Cloudflare Worker and D1 database.</p>
 <section class="panel">
   <label for="token">Admin access token</label><br><br>
   <input id="token" type="password" autocomplete="current-password" placeholder="Enter your Worker ADMIN_TOKEN">
   <div class="actions" style="margin-top:12px">
-    <button id="load">Load visitors</button><button id="export">Export JSON</button><button id="logout">Clear token</button>
+    <button id="load">Load visitors</button>
+    <button id="more" disabled>Load more</button>
+    <button id="export">Export all as JSON</button>
+    <button id="logout">Clear token</button>
   </div>
   <p id="status" class="muted" role="status">Not connected.</p>
 </section>
 <section class="panel">
   <div id="stats" class="muted">No data loaded.</div>
-  <div style="overflow-x:auto"><table><thead><tr><th>Visitor ID</th><th>First seen</th><th>Last seen</th><th>Visits</th><th>IP address</th><th>Device</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+  <div style="overflow-x:auto"><table><thead><tr><th>Visitor ID</th><th>First seen</th><th>Last seen</th><th>Visits</th><th>IP address</th><th>Browser / device</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
 </section>
 <section class="panel" id="detail" hidden><h2>Visitor record</h2><pre id="record"></pre></section>
 <script>
@@ -41,41 +45,153 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;
   const status = document.getElementById("status");
   const rows = document.getElementById("rows");
   const stats = document.getElementById("stats");
+  const more = document.getElementById("more");
   let records = [];
-  const headers = () => ({ "Authorization": "Bearer " + token.value.trim() });
+  let nextCursor = null;
+  let totals = null;
 
-  async function api(path, options={}) {
+  async function api(path, options = {}) {
     if (!token.value.trim()) throw new Error("Enter the admin token first.");
-    const response = await fetch(API + path, { ...options, headers: { ...headers(), ...(options.headers || {}) }, cache:"no-store" });
+    const response = await fetch(API + path, {
+      ...options,
+      headers: {
+        "Authorization": "Bearer " + token.value.trim(),
+        ...(options.headers || {})
+      },
+      cache: "no-store"
+    });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || ("Request failed: " + response.status));
     return body;
   }
-  function cell(value) { const td=document.createElement("td"); td.textContent=value == null ? "—" : String(value); return td; }
 
-  async function load() {
-    status.textContent = "Loading…"; status.className="muted";
-    try {
-      const data = await api("/api/admin/visitors");
-      records = data.visitors || [];
-      rows.replaceChildren();
-      for (const r of records) {
-        const tr=document.createElement("tr");
-        tr.append(cell(r.visitor_id),cell(r.first_seen),cell(r.last_seen),cell(r.visits),cell(r.ip_address),cell(r.user_agent));
-        const td=document.createElement("td"), group=document.createElement("div"); group.className="actions";
-        const view=document.createElement("button"); view.textContent="View";
-        view.addEventListener("click",()=>{document.getElementById("detail").hidden=false;document.getElementById("record").textContent=JSON.stringify(r,null,2);});
-        const del=document.createElement("button"); del.textContent="Delete";
-        del.addEventListener("click",async()=>{if(!confirm("Permanently delete this visitor record?"))return;try{await api("/api/admin/visitors/"+encodeURIComponent(r.visitor_id),{method:"DELETE"});await load();}catch(e){status.textContent=e.message;status.className="error";}});
-        group.append(view,del);td.append(group);tr.append(td);rows.append(tr);
-      }
-      stats.textContent = records.length + " visitor records (records older than 90 days are automatically removed).";
-      status.textContent = "Connected."; 
-    } catch(e) { status.textContent=e.message; status.className="error"; }
+  function cell(value) {
+    const td = document.createElement("td");
+    td.textContent = value == null ? "—" : String(value);
+    return td;
   }
-  document.getElementById("load").addEventListener("click",load);
-  document.getElementById("logout").addEventListener("click",()=>{token.value="";records=[];rows.replaceChildren();stats.textContent="No data loaded.";status.textContent="Token cleared.";});
-  document.getElementById("export").addEventListener("click",()=>{if(!records.length){status.textContent="Load records before exporting.";return;}const blob=new Blob([JSON.stringify(records,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="visitor-index-export.json";a.click();URL.revokeObjectURL(url);});
+
+  function updateStats() {
+    if (!totals) return;
+    stats.textContent =
+      totals.unique_visitors + " unique visitors · " +
+      totals.total_visits + " total visits · " +
+      totals.new_last_24h + " new in 24h · " +
+      totals.active_last_24h + " active in 24h · " +
+      records.length + " loaded";
+  }
+
+  function addRow(r) {
+    const tr = document.createElement("tr");
+    tr.append(
+      cell(r.visitor_id), cell(r.first_seen), cell(r.last_seen),
+      cell(r.visits), cell(r.ip_address), cell(r.user_agent)
+    );
+
+    const td = document.createElement("td");
+    const group = document.createElement("div");
+    group.className = "actions";
+
+    const view = document.createElement("button");
+    view.textContent = "View";
+    view.addEventListener("click", () => {
+      document.getElementById("detail").hidden = false;
+      document.getElementById("record").textContent = JSON.stringify(r, null, 2);
+    });
+
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      if (!confirm("Permanently delete this visitor record?")) return;
+      try {
+        await api("/api/admin/visitors/" + encodeURIComponent(r.visitor_id), { method: "DELETE" });
+        await load(true);
+      } catch (e) {
+        status.textContent = e.message;
+        status.className = "error";
+      }
+    });
+
+    group.append(view, del);
+    td.append(group);
+    tr.append(td);
+    rows.append(tr);
+  }
+
+  async function load(reset = true) {
+    status.textContent = "Loading…";
+    status.className = "muted";
+    more.disabled = true;
+    try {
+      if (reset) {
+        records = [];
+        nextCursor = null;
+        totals = null;
+        rows.replaceChildren();
+      }
+      const params = new URLSearchParams({ limit: "200" });
+      if (nextCursor) params.set("cursor", nextCursor);
+      const data = await api("/api/admin/visitors?" + params.toString());
+      totals = data.stats || totals;
+      const page = data.visitors || [];
+      records.push(...page);
+      page.forEach(addRow);
+      nextCursor = data.next_cursor || null;
+      more.disabled = !nextCursor;
+      updateStats();
+      status.textContent = "Connected. " + (nextCursor ? "More records are available." : "All records loaded.");
+    } catch (e) {
+      status.textContent = e.message;
+      status.className = "error";
+    }
+  }
+
+  async function exportAll() {
+    status.textContent = "Preparing full JSON export…";
+    status.className = "muted";
+    try {
+      const all = [];
+      let cursor = null;
+      do {
+        const params = new URLSearchParams({ limit: "200" });
+        if (cursor) params.set("cursor", cursor);
+        const data = await api("/api/admin/visitors?" + params.toString());
+        all.push(...(data.visitors || []));
+        cursor = data.next_cursor || null;
+      } while (cursor);
+
+      if (!all.length) {
+        status.textContent = "There are no visitor records to export.";
+        return;
+      }
+      const blob = new Blob([JSON.stringify(all, null, 2)], { type: "application/json" });
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = "visitor-index-export.json";
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+      status.textContent = "Exported " + all.length + " records.";
+    } catch (e) {
+      status.textContent = e.message;
+      status.className = "error";
+    }
+  }
+
+  document.getElementById("load").addEventListener("click", () => load(true));
+  more.addEventListener("click", () => load(false));
+  document.getElementById("export").addEventListener("click", exportAll);
+  document.getElementById("logout").addEventListener("click", () => {
+    token.value = "";
+    records = [];
+    nextCursor = null;
+    totals = null;
+    rows.replaceChildren();
+    stats.textContent = "No data loaded.";
+    status.textContent = "Token cleared.";
+    more.disabled = true;
+    document.getElementById("detail").hidden = true;
+  });
 })();
 </script>
 </body>

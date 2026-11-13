@@ -1,6 +1,6 @@
 (() => {
   "use strict";
-  const API_BASE = "https://REPLACE-WITH-YOUR-WORKER.workers.dev";
+  const API_BASE = "https://visitor-indexer.aryanavery1488.workers.dev";
   const STORAGE_KEY = "visitor_index_id_v1";
 
   function makeId() {

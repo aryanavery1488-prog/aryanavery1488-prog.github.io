@@ -4,6 +4,8 @@
   const API = "https://visitor-indexer.aryanavery1488.workers.dev";
   const VISITOR_KEY = "visitor_index_id_v1";
   const SESSION_KEY = "visitor_index_session_v1";
+  const SESSION_STARTED_KEY = "visitor_index_session_started_v1";
+  const SESSION_PATH_KEY = "visitor_index_session_path_v1";
   const makeId = () => crypto.randomUUID
     ? crypto.randomUUID()
     : Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -20,14 +22,24 @@
   }
 
   let sessionId;
+  let newSession = false;
+  let sessionStartedAt = Date.now();
+  let sessionPath = [];
   try {
     sessionId = sessionStorage.getItem(SESSION_KEY);
     if (!sessionId) {
       sessionId = "s_" + makeId();
       sessionStorage.setItem(SESSION_KEY, sessionId);
+      newSession = true;
     }
+    const storedStart = Number(sessionStorage.getItem(SESSION_STARTED_KEY));
+    if (storedStart > 0) sessionStartedAt = storedStart;
+    else sessionStorage.setItem(SESSION_STARTED_KEY, String(sessionStartedAt));
+    const storedPath = JSON.parse(sessionStorage.getItem(SESSION_PATH_KEY) || "[]");
+    if (Array.isArray(storedPath)) sessionPath = storedPath.filter(x => typeof x === "string").slice(-20);
   } catch {
     sessionId = "s_" + makeId();
+    newSession = true;
   }
 
   const agent = navigator.userAgent || "";
@@ -76,8 +88,14 @@
     return "Other";
   }
 
-  const mobile = userAgentData?.mobile ??
-    /Android|iPhone|iPad|iPod|Mobile/i.test(agent);
+  function renderingEngine() {
+    if (/Firefox\//i.test(agent)) return "Gecko";
+    if (/AppleWebKit/i.test(agent) && !/Chrome|Chromium|CriOS|Edg|OPR|Brave/i.test(agent)) return "WebKit";
+    if (/AppleWebKit|Chrome|Chromium|CriOS|Edg|OPR/i.test(agent)) return "Blink";
+    return "Unknown";
+  }
+
+  const mobile = userAgentData?.mobile ?? /Android|iPhone|iPad|iPod|Mobile/i.test(agent);
   const category = /iPad|Tablet/i.test(agent)
     ? "tablet"
     : mobile ? "mobile" : "desktop";
@@ -96,6 +114,7 @@
     timezone_offset_minutes: new Date().getTimezoneOffset()
   };
 
+  const browserVersionMatch = agent.match(/(?:Brave|Chrome|CriOS|Edg|OPR|Firefox|FxiOS|Version)\/([\d.]+)/i);
   const metadata = {
     device: {
       category,
@@ -107,9 +126,11 @@
       cookie_enabled: !!navigator.cookieEnabled,
       online: navigator.onLine
     },
-    system: { name: systemName() },
+    system: { name: systemName(), version: null },
     browser: {
       name: browserName(),
+      version: browserVersionMatch?.[1] || null,
+      rendering_engine: renderingEngine(),
       user_agent: agent,
       brands: userAgentData?.brands || null,
       mobile_hint: !!mobile,
@@ -133,10 +154,7 @@
       rtt_ms: connection.rtt || null,
       save_data: !!connection.saveData
     } : null,
-    attribution: {
-      referrer_host: referrerHost(),
-      utm
-    }
+    attribution: { referrer_host: referrerHost(), utm }
   };
 
   const base = {
@@ -177,17 +195,62 @@
 
   window.__visitorTrackingPromise = visitPromise;
 
+  function appendSessionPage(page) {
+    sessionPath.push(page);
+    sessionPath = sessionPath.slice(-20);
+    try { sessionStorage.setItem(SESSION_PATH_KEY, JSON.stringify(sessionPath)); } catch {}
+  }
+
+  if (newSession) {
+    sendEvent("session_start", {
+      started_at: new Date(sessionStartedAt).toISOString(),
+      entry_page: safePage(location.href)
+    });
+  }
+
+  const featureSupport = {
+    performance_observer: "PerformanceObserver" in window,
+    resize_observer: "ResizeObserver" in window,
+    intersection_observer: "IntersectionObserver" in window,
+    navigation_timing: !!performance.getEntriesByType?.("navigation")?.length,
+    resource_timing: !!performance.getEntriesByType?.("resource"),
+    service_worker_api: "serviceWorker" in navigator,
+    send_beacon_api: "sendBeacon" in navigator,
+    user_agent_data_api: !!navigator.userAgentData,
+    network_information_api: !!connection,
+    orientation_api: !!screen.orientation,
+    cookie_enabled: !!navigator.cookieEnabled
+  };
+  sendEvent("feature_support", {
+    features: featureSupport,
+    feature_count: Object.values(featureSupport).filter(Boolean).length
+  });
+
+  let pageStarted = Date.now();
+  let pageEnded = false;
+  let activeMilliseconds = 0;
+  let visibleSince = document.visibilityState === "visible" ? Date.now() : null;
+
+  function activeDuration() {
+    return Math.max(0, activeMilliseconds + (visibleSince ? Date.now() - visibleSince : 0));
+  }
+
   function pageView(extra = {}) {
+    const current = safePage(location.href);
+    const previous = sessionPath.length ? sessionPath[sessionPath.length - 1] : null;
+    appendSessionPage(current);
+    const navigation = performance.getEntriesByType("navigation")[0];
     sendEvent("page_view", {
       title: (document.title || "").slice(0, 180),
       referrer_host: referrerHost(),
+      previous_page: previous && previous !== current ? previous : null,
+      navigation_type: navigation?.type || (previous ? "same_document" : "entry"),
+      page_index_in_session: sessionPath.length,
       utm,
       ...extra
     });
   }
 
-  let pageStarted = Date.now();
-  let pageEnded = false;
   pageView({
     entry_page: !document.referrer || (() => {
       try { return new URL(document.referrer).origin !== location.origin; }
@@ -198,98 +261,137 @@
   function finishPage() {
     if (pageEnded) return;
     pageEnded = true;
-    sendEvent("page_exit", {}, Math.min(86400000, Math.max(0, Date.now() - pageStarted)));
+    sendEvent("page_exit", {
+      active_duration_ms: Math.round(activeDuration()),
+      navigation_path: sessionPath.slice(-12)
+    }, Math.min(86400000, Math.max(0, Date.now() - pageStarted)));
     flushVitals();
   }
 
   function startPage(extra = {}) {
     pageEnded = false;
     pageStarted = Date.now();
+    activeMilliseconds = 0;
+    visibleSince = document.visibilityState === "visible" ? Date.now() : null;
+    sentMilestones.clear();
     pageView(extra);
   }
 
   const vitalValues = new Map();
-  const vitalSent = new Set();
+  const vitalSent = new Map();
+  const vitalObservers = [];
 
-  function recordVital(name, value, unit = "ms") {
+  function recordVital(name, value, unit = "ms", method = null) {
     if (!Number.isFinite(value)) return;
-    vitalValues.set(name, { name, value: Math.round(value * 1000) / 1000, unit });
+    vitalValues.set(name, {
+      name,
+      value: Math.round(value * 1000) / 1000,
+      unit,
+      method
+    });
   }
 
   function flushVitals() {
+    for (const item of vitalObservers) {
+      try {
+        const pending = item.observer.takeRecords();
+        if (pending.length) item.consume(pending);
+      } catch {}
+    }
     for (const [name, data] of vitalValues) {
-      if (vitalSent.has(name)) continue;
-      vitalSent.add(name);
+      const signature = String(data.value);
+      if (vitalSent.get(name) === signature) continue;
+      vitalSent.set(name, signature);
       sendEvent("web_vital", data);
     }
   }
 
-  try {
-    if ("PerformanceObserver" in window &&
-        PerformanceObserver.supportedEntryTypes?.includes("largest-contentful-paint")) {
-      let observer;
-      observer = new PerformanceObserver(list => {
-        const entries = list.getEntries();
-        if (entries.length) recordVital("LCP", entries[entries.length - 1].startTime);
-      });
-      observer.observe({ type: "largest-contentful-paint", buffered: true });
-      addEventListener("pagehide", () => observer.disconnect(), { once: true });
-    }
-  } catch {}
+  function observeVital(options, consume) {
+    try {
+      if (!("PerformanceObserver" in window) ||
+          !PerformanceObserver.supportedEntryTypes?.includes(options.type)) return;
+      const observer = new PerformanceObserver(list => consume(list.getEntries()));
+      observer.observe({ ...options, buffered: true });
+      vitalObservers.push({ observer, consume });
+    } catch {}
+  }
 
-  try {
-    if ("PerformanceObserver" in window &&
-        PerformanceObserver.supportedEntryTypes?.includes("layout-shift")) {
-      let cumulative = 0;
-      let observer;
-      observer = new PerformanceObserver(list => {
-        for (const entry of list.getEntries()) {
-          if (!entry.hadRecentInput) cumulative += entry.value;
-        }
-        recordVital("CLS", cumulative, "score");
-      });
-      observer.observe({ type: "layout-shift", buffered: true });
-      addEventListener("pagehide", () => observer.disconnect(), { once: true });
+  observeVital({ type: "largest-contentful-paint" }, entries => {
+    if (entries.length) {
+      recordVital("LCP", entries[entries.length - 1].startTime, "ms", "largest_contentful_paint");
     }
-  } catch {}
+  });
 
-  try {
-    if ("PerformanceObserver" in window &&
-        PerformanceObserver.supportedEntryTypes?.includes("event")) {
-      let maxDuration = 0;
-      let observer;
-      observer = new PerformanceObserver(list => {
-        for (const entry of list.getEntries()) {
-          if (entry.interactionId) maxDuration = Math.max(maxDuration, entry.duration);
-        }
-        if (maxDuration > 0) recordVital("INP", maxDuration);
-      });
-      observer.observe({ type: "event", buffered: true, durationThreshold: 40 });
-      addEventListener("pagehide", () => observer.disconnect(), { once: true });
+  let cumulativeLayoutShift = 0;
+  observeVital({ type: "layout-shift" }, entries => {
+    for (const entry of entries) {
+      if (!entry.hadRecentInput) cumulativeLayoutShift += entry.value;
     }
-  } catch {}
+    recordVital("CLS", cumulativeLayoutShift, "score", "cumulative_layout_shift");
+  });
+
+  let maxInteractionDuration = 0;
+  observeVital({ type: "event", durationThreshold: 40 }, entries => {
+    for (const entry of entries) {
+      if (entry.interactionId) maxInteractionDuration = Math.max(maxInteractionDuration, entry.duration);
+    }
+    if (maxInteractionDuration > 0) {
+      recordVital("INP", maxInteractionDuration, "ms", "largest_observed_interaction_candidate");
+    }
+  });
+
+  observeVital({ type: "longtask" }, entries => {
+    if (!entries.length) return;
+    const durations = entries.map(entry => entry.duration).filter(Number.isFinite);
+    sendEvent("long_task", {
+      count: durations.length,
+      duration_ms: Math.round(durations.reduce((a, b) => a + b, 0)),
+      maximum_ms: Math.round(Math.max(...durations)),
+      threshold_ms: 50
+    });
+  });
 
   function sendPerformance() {
     try {
       const navigation = performance.getEntriesByType("navigation")[0];
       const resources = performance.getEntriesByType("resource");
       if (!navigation) return;
-      const failures = resources
-        .filter(entry => entry.duration > 0 && entry.transferSize === 0 &&
-          !entry.name.startsWith("data:") && !entry.name.startsWith("blob:"))
-        .slice(0, 20)
-        .map(entry => safePage(entry.name));
+
+      const paints = performance.getEntriesByType("paint");
+      const slowResources = resources
+        .filter(entry => entry.duration >= 1000 && /^https?:/i.test(entry.name))
+        .sort((a, b) => b.duration - a.duration)
+        .slice(0, 8)
+        .map(entry => ({
+          resource: safePage(entry.name),
+          initiator_type: String(entry.initiatorType || "other").slice(0, 30),
+          duration_ms: Math.round(entry.duration),
+          transfer_bytes: Number(entry.transferSize) || 0
+        }));
+
+      const byType = {};
+      for (const entry of resources) {
+        const type = String(entry.initiatorType || "other").slice(0, 24);
+        byType[type] = (byType[type] || 0) + 1;
+      }
 
       sendEvent("page_performance", {
+        navigation_type: navigation.type || null,
         dom_content_loaded_ms: Math.round(navigation.domContentLoadedEventEnd),
         load_ms: Math.round(navigation.loadEventEnd),
         response_ms: Math.round(navigation.responseEnd - navigation.requestStart),
         transfer_bytes: navigation.transferSize || 0,
         resource_count: resources.length,
+        resource_types: byType,
         resource_duration_ms: Math.round(resources.reduce((sum, entry) => sum + entry.duration, 0)),
-        failed_resource_count: failures.length,
-        possible_failed_resources: failures
+        first_paint_ms: Math.round(paints.find(entry => entry.name === "first-paint")?.startTime || 0),
+        first_contentful_paint_ms: Math.round(paints.find(entry => entry.name === "first-contentful-paint")?.startTime || 0),
+        slow_resource_count: slowResources.length
       });
+
+      if (slowResources.length) {
+        sendEvent("slow_resource", { items: slowResources });
+      }
     } catch {}
   }
 
@@ -297,6 +399,14 @@
     setTimeout(sendPerformance, 0);
   } else {
     addEventListener("load", () => setTimeout(sendPerformance, 0), { once: true });
+  }
+
+  if (userAgentData?.getHighEntropyValues) {
+    userAgentData.getHighEntropyValues([
+      "architecture", "bitness", "platformVersion", "uaFullVersion"
+    ]).then(details => {
+      sendEvent("browser_details", details);
+    }).catch(() => {});
   }
 
   const scrollMilestones = [25, 50, 75, 90];
@@ -314,16 +424,47 @@
     }
   }, { passive: true });
 
-  addEventListener("pagehide", finishPage);
+  let resizeTimer = null;
+  addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      sendEvent("viewport_change", {
+        viewport_width: innerWidth,
+        viewport_height: innerHeight,
+        screen_width: screen.width,
+        screen_height: screen.height,
+        pixel_ratio: devicePixelRatio || 1,
+        orientation: screen.orientation?.type || null
+      });
+    }, 700);
+  }, { passive: true });
+
+  addEventListener("pagehide", () => {
+    finishPage();
+    sendEvent("session_end", {
+      ended_at: new Date().toISOString(),
+      session_duration_ms: Math.max(0, Date.now() - sessionStartedAt),
+      last_page: safePage(location.href),
+      navigation_path: sessionPath.slice(-20)
+    });
+    flushVitals();
+  });
 
   addEventListener("hashchange", () => {
     finishPage();
-    sentMilestones.clear();
     startPage({ navigation: "hash" });
   });
 
   document.addEventListener("visibilitychange", () => {
-    sendEvent(document.visibilityState === "hidden" ? "tab_hidden" : "tab_visible");
+    if (document.visibilityState === "hidden") {
+      if (visibleSince) activeMilliseconds += Date.now() - visibleSince;
+      visibleSince = null;
+      sendEvent("tab_hidden", { active_duration_ms: Math.round(activeMilliseconds) });
+      flushVitals();
+    } else {
+      visibleSince = Date.now();
+      sendEvent("tab_visible");
+    }
   });
 
   document.addEventListener("click", event => {
@@ -345,8 +486,8 @@
       } catch {}
       sendEvent("resource_error", {
         resource,
-        element: String(target.tagName || "unknown").toLowerCase(),
-        resource_type: target.type || null,
+        element: String(target.tagName || "unknown").toLowerCase().slice(0, 24),
+        resource_type: String(target.type || "").slice(0, 40) || null,
         message: "Resource failed to load"
       });
       return;
@@ -375,11 +516,5 @@
         save_data: !!connection.saveData
       });
     });
-  }
-
-  if (userAgentData?.getHighEntropyValues) {
-    userAgentData.getHighEntropyValues([
-      "architecture", "bitness", "model", "platformVersion", "uaFullVersion"
-    ]).then(details => sendEvent("browser_details", details)).catch(() => {});
   }
 })();

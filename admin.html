@@ -1,202 +1,23 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow">
-<title>Visitor Index — Admin</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Visitor Index — Admin</title>
 <style>
-:root{color-scheme:dark;font:15px system-ui,sans-serif;background:#101318;color:#edf0f4}
-body{max-width:1100px;margin:40px auto;padding:0 18px}h1{font-size:26px}
-.panel{background:#1a2029;border:1px solid #303a48;border-radius:12px;padding:18px;margin:16px 0}
-input,button{font:inherit;border-radius:7px;padding:10px;border:1px solid #465366;background:#111720;color:inherit}
-input{width:min(100%,520px);box-sizing:border-box}button{cursor:pointer;background:#27384e}
-button:hover{background:#344b67}button:disabled{opacity:.45;cursor:not-allowed}
-.muted{color:#aab5c4}.error{color:#ff9c9c}
-table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:10px;border-bottom:1px solid #303a48;vertical-align:top}
-td{overflow-wrap:anywhere}.actions{display:flex;gap:8px;flex-wrap:wrap}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;border-radius:8px}
-@media(max-width:700px){table{font-size:12px}th,td{padding:6px}}
-</style>
-</head>
-<body>
-<h1>Visitor Index</h1>
-<p class="muted">Private administration interface. Records are retrieved from the protected Cloudflare Worker and D1 database.</p>
-<section class="panel">
-  <label for="token">Admin access token</label><br><br>
-  <input id="token" type="password" autocomplete="current-password" placeholder="Enter your Worker ADMIN_TOKEN">
-  <div class="actions" style="margin-top:12px">
-    <button id="load">Load visitors</button>
-    <button id="more" disabled>Load more</button>
-    <button id="export">Export all as JSON</button>
-    <button id="logout">Clear token</button>
-  </div>
-  <p id="status" class="muted" role="status">Not connected.</p>
-</section>
-<section class="panel">
-  <div id="stats" class="muted">No data loaded.</div>
-  <div style="overflow-x:auto"><table><thead><tr><th>Visitor ID</th><th>First seen</th><th>Last seen</th><th>Visits</th><th>IP address</th><th>Browser / device</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
-</section>
-<section class="panel" id="detail" hidden><h2>Visitor record</h2><pre id="record"></pre><h2>Visit and activity history</h2><pre id="events">Select View to load events.</pre></section>
-<script>
-(() => {
-  const API = "https://visitor-indexer.aryanavery1488.workers.dev";
-  const token = document.getElementById("token");
-  const status = document.getElementById("status");
-  const rows = document.getElementById("rows");
-  const stats = document.getElementById("stats");
-  const more = document.getElementById("more");
-  let records = [];
-  let nextCursor = null;
-  let totals = null;
-
-  async function api(path, options = {}) {
-    if (!token.value.trim()) throw new Error("Enter the admin token first.");
-    const response = await fetch(API + path, {
-      ...options,
-      headers: {
-        "Authorization": "Bearer " + token.value.trim(),
-        ...(options.headers || {})
-      },
-      cache: "no-store"
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || ("Request failed: " + response.status));
-    return body;
-  }
-
-  function cell(value) {
-    const td = document.createElement("td");
-    td.textContent = value == null ? "—" : String(value);
-    return td;
-  }
-
-  function updateStats() {
-    if (!totals) return;
-    stats.textContent =
-      totals.unique_visitors + " unique visitors · " +
-      totals.total_visits + " total visits · " +
-      totals.new_last_24h + " new in 24h · " +
-      totals.active_last_24h + " active in 24h · " +
-      records.length + " loaded";
-  }
-
-  function addRow(r) {
-    const tr = document.createElement("tr");
-    tr.append(
-      cell(r.visitor_id), cell(r.first_seen), cell(r.last_seen),
-      cell(r.visits), cell(r.ip_address), cell(r.user_agent)
-    );
-
-    const td = document.createElement("td");
-    const group = document.createElement("div");
-    group.className = "actions";
-
-    const view = document.createElement("button");
-    view.textContent = "View";
-    view.addEventListener("click", async () => {
-      document.getElementById("detail").hidden = false;
-      document.getElementById("record").textContent = JSON.stringify(r, null, 2);
-      try {
-        const data = await api("/api/admin/visitors/" + encodeURIComponent(r.visitor_id) + "/events");
-        document.getElementById("events").textContent = JSON.stringify(data.events || [], null, 2);
-      } catch (e) { document.getElementById("events").textContent = e.message; }
-    });
-
-    const del = document.createElement("button");
-    del.textContent = "Delete";
-    del.addEventListener("click", async () => {
-      if (!confirm("Permanently delete this visitor record?")) return;
-      try {
-        await api("/api/admin/visitors/" + encodeURIComponent(r.visitor_id), { method: "DELETE" });
-        await load(true);
-      } catch (e) {
-        status.textContent = e.message;
-        status.className = "error";
-      }
-    });
-
-    group.append(view, del);
-    td.append(group);
-    tr.append(td);
-    rows.append(tr);
-  }
-
-  async function load(reset = true) {
-    status.textContent = "Loading…";
-    status.className = "muted";
-    more.disabled = true;
-    try {
-      if (reset) {
-        records = [];
-        nextCursor = null;
-        totals = null;
-        rows.replaceChildren();
-      }
-      const params = new URLSearchParams({ limit: "200" });
-      if (nextCursor) params.set("cursor", nextCursor);
-      const data = await api("/api/admin/visitors?" + params.toString());
-      totals = data.stats || totals;
-      const page = data.visitors || [];
-      records.push(...page);
-      page.forEach(addRow);
-      nextCursor = data.next_cursor || null;
-      more.disabled = !nextCursor;
-      updateStats();
-      status.textContent = "Connected. " + (nextCursor ? "More records are available." : "All records loaded.");
-    } catch (e) {
-      status.textContent = e.message;
-      status.className = "error";
-    }
-  }
-
-  async function exportAll() {
-    status.textContent = "Preparing full JSON export…";
-    status.className = "muted";
-    try {
-      const all = [];
-      let cursor = null;
-      do {
-        const params = new URLSearchParams({ limit: "200" });
-        if (cursor) params.set("cursor", cursor);
-        const data = await api("/api/admin/visitors?" + params.toString());
-        all.push(...(data.visitors || []));
-        cursor = data.next_cursor || null;
-      } while (cursor);
-
-      if (!all.length) {
-        status.textContent = "There are no visitor records to export.";
-        return;
-      }
-      const blob = new Blob([JSON.stringify(all, null, 2)], { type: "application/json" });
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = "visitor-index-export.json";
-      link.click();
-      URL.revokeObjectURL(objectUrl);
-      status.textContent = "Exported " + all.length + " records.";
-    } catch (e) {
-      status.textContent = e.message;
-      status.className = "error";
-    }
-  }
-
-  document.getElementById("load").addEventListener("click", () => load(true));
-  more.addEventListener("click", () => load(false));
-  document.getElementById("export").addEventListener("click", exportAll);
-  document.getElementById("logout").addEventListener("click", () => {
-    token.value = "";
-    records = [];
-    nextCursor = null;
-    totals = null;
-    rows.replaceChildren();
-    stats.textContent = "No data loaded.";
-    status.textContent = "Token cleared.";
-    more.disabled = true;
-    document.getElementById("detail").hidden = true;
-  });
-})();
-</script>
-</body>
-</html>
+:root{color-scheme:dark;font:14px system-ui,sans-serif;background:#101318;color:#edf0f4}body{max-width:1300px;margin:32px auto;padding:0 16px}h1{font-size:26px}.panel{background:#1a2029;border:1px solid #303a48;border-radius:12px;padding:16px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}input,select,button{font:inherit;border-radius:7px;padding:9px;border:1px solid #465366;background:#111720;color:inherit;min-width:0}button{cursor:pointer;background:#27384e}button:hover{background:#344b67}button:disabled{opacity:.45;cursor:not-allowed}.muted{color:#aab5c4}.error{color:#ff9c9c}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}.stat{background:#111720;padding:12px;border-radius:8px}.stat strong{display:block;font-size:22px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{text-align:left;padding:9px;border-bottom:1px solid #303a48;vertical-align:top}td{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#111720;padding:12px;border-radius:8px;max-height:520px;overflow:auto}.scroll{overflow-x:auto}@media(max-width:700px){table{font-size:12px}th,td{padding:6px}}
+</style></head><body>
+<h1>Visitor Index</h1><p class="muted">Private administration interface. Location is approximate IP-derived network metadata. Visitor data is retained for up to 90 days.</p>
+<section class="panel"><label for="token">Admin access token</label><br><br><input id="token" type="password" autocomplete="current-password" placeholder="Worker ADMIN_TOKEN" style="width:min(100%,520px)"><div class="actions"><button id="load">Load visitors</button><button id="analytics">Refresh analytics</button><button id="csv">Export filtered CSV</button><button id="json">Export filtered JSON</button><button id="logout">Clear token</button></div><p id="status" class="muted" role="status">Not connected.</p></section>
+<section class="panel"><h2>Search and filters</h2><div class="grid"><input id="q" placeholder="Search visitor, IP, browser, location, ASN"><input id="country" placeholder="Country code (e.g. US)"><input id="device" placeholder="Platform / device"><input id="os" placeholder="Operating system"><label>First seen from<br><input id="from" type="date"></label><label>First seen to<br><input id="to" type="date"></label><label>Sort by<br><select id="sort"><option value="last_seen">Last seen</option><option value="first_seen">First seen</option><option value="visits">Visit count</option></select></label><label>Order<br><select id="dir"><option value="desc">Descending</option><option value="asc">Ascending</option></select></label></div><div class="actions"><button id="apply">Apply filters</button><button id="clear">Clear filters</button><button id="more" disabled>Load more</button></div></section>
+<section class="panel"><h2>Overview</h2><div id="stats" class="statgrid"><span class="muted">No data loaded.</span></div></section>
+<section class="panel"><h2>Analytics — last 30 days</h2><div id="analyticsBox" class="muted">Select Refresh analytics.</div></section>
+<section class="panel"><h2>Visitors</h2><div class="scroll"><table><thead><tr><th>Visitor ID</th><th>First seen</th><th>Last seen</th><th>Visits</th><th>IP</th><th>Approx. location</th><th>Browser / platform</th><th></th></tr></thead><tbody id="rows"></tbody></table></div></section>
+<section class="panel" id="detail" hidden><h2>Visitor record</h2><pre id="record"></pre><h2>Activity timeline</h2><pre id="events"></pre></section>
+<script>(()=>{"use strict";
+const API="https://visitor-indexer.aryanavery1488.workers.dev",el=id=>document.getElementById(id),token=el("token");let records=[],offset=0,total=0;
+async function api(path){if(!token.value.trim())throw Error("Enter the admin token first.");const r=await fetch(API+path,{headers:{Authorization:"Bearer "+token.value.trim()},cache:"no-store"}),b=await r.json().catch(()=>({}));if(!r.ok)throw Error(b.error||"Request failed: "+r.status);return b}
+function params(){const p=new URLSearchParams({limit:"100",offset:String(offset),sort:el("sort").value,dir:el("dir").value});for(const id of ["q","country","device","os","from","to"])if(el(id).value.trim())p.set(id,el(id).value.trim());return p}
+function stat(label,value){const d=document.createElement("div");d.className="stat";const s=document.createElement("strong");s.textContent=value??"—";d.append(s,document.createTextNode(label));return d}
+function addRow(r){const tr=document.createElement("tr"),platform=r.metadata?.device?.platform||"—",browser=r.metadata?.browser?.brands?.map(x=>x.brand).join(", ")||r.user_agent||"—",loc=[r.location?.city,r.location?.region,r.location?.country].filter(Boolean).join(", ")||"—";for(const v of [r.visitor_id,r.first_seen,r.last_seen,r.visits,r.ip_address,loc,browser+" / "+platform]){const td=document.createElement("td");td.textContent=v??"—";tr.append(td)}const td=document.createElement("td"),view=document.createElement("button");view.textContent="View";view.onclick=async()=>{el("detail").hidden=false;el("record").textContent=JSON.stringify(r,null,2);el("events").textContent="Loading…";try{const d=await api("/api/admin/visitors/"+encodeURIComponent(r.visitor_id)+"/events");el("events").textContent=JSON.stringify(d.events||[],null,2)}catch(e){el("events").textContent=e.message}};const del=document.createElement("button");del.textContent="Delete";del.onclick=async()=>{if(!confirm("Permanently delete this visitor and activity history?"))return;try{const resp=await fetch(API+"/api/admin/visitors/"+encodeURIComponent(r.visitor_id),{method:"DELETE",headers:{Authorization:"Bearer "+token.value.trim()}});if(!resp.ok)throw Error("Delete failed");await load(true)}catch(e){el("status").textContent=e.message}};td.append(view,document.createTextNode(" "),del);tr.append(td);el("rows").append(tr)}
+async function load(reset){el("status").textContent="Loading…";if(reset){offset=0;records=[];el("rows").replaceChildren()}try{const d=await api("/api/admin/visitors?"+params());records.push(...(d.visitors||[]));(d.visitors||[]).forEach(addRow);total=d.stats?.unique_visitors||0;offset=d.next_offset??null;el("more").disabled=offset===null;el("stats").replaceChildren(stat("Unique visitors",total),stat("Matching visits",d.stats?.total_visits||0),stat("Loaded",records.length));el("status").textContent="Loaded "+records.length+" of "+total+" matching visitors."}catch(e){el("status").textContent=e.message;el("status").className="error"}}
+async function analytics(){try{const d=await api("/api/admin/analytics"),box=el("analyticsBox");box.replaceChildren();const add=(name,items,key)=>{const h=document.createElement("h3");h.textContent=name;box.append(h);const p=document.createElement("pre");p.textContent=(items||[]).map(x=>key(x)).join("\n")||"No data";box.append(p)};add("Most visited pages",d.top_pages,x=>x.views+" views · "+x.visitors+" visitors · "+(x.page||"(unknown)"));add("Countries",d.countries,x=>x.country+": "+x.visitors);add("Browser groups",d.browsers,x=>x.browser+": "+x.visitors);add("Event totals",d.event_counts,x=>x.event_type+": "+x.total);add("Technical errors",d.errors,x=>x.event_type+": "+x.total);add("Session / performance summary",[d.sessions],x=>"Sessions: "+x.sessions+" · Page exits: "+x.page_views+" · Average page duration: "+Math.round(x.avg_page_duration_ms||0)+" ms")}catch(e){el("analyticsBox").textContent=e.message}}
+function exportData(format){const rows=records;if(!rows.length){el("status").textContent="No loaded records to export.";return}let blob,name;if(format==="json"){blob=new Blob([JSON.stringify(rows,null,2)],{type:"application/json"});name="visitor-index-filtered.json"}else{const cols=["visitor_id","first_seen","last_seen","visits","ip_address","country","region","city","asn","page","referrer","user_agent"];const val=r=>[r.visitor_id,r.first_seen,r.last_seen,r.visits,r.ip_address,r.location?.country,r.location?.region,r.location?.city,r.network?.asn,r.page,r.referrer,r.user_agent].map(x=>'"'+String(x??"").replace(/"/g,'""')+'"').join(",");blob=new Blob([[cols.join(","),...rows.map(val)].join("\r\n")],{type:"text/csv"});name="visitor-index-filtered.csv"}const a=document.createElement("a"),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
+el("load").onclick=()=>load(true);el("apply").onclick=()=>load(true);el("more").onclick=()=>load(false);el("analytics").onclick=analytics;el("csv").onclick=()=>exportData("csv");el("json").onclick=()=>exportData("json");el("clear").onclick=()=>{["q","country","device","os","from","to"].forEach(x=>el(x).value="");el("sort").value="last_seen";el("dir").value="desc";load(true)};el("logout").onclick=()=>{token.value="";records=[];offset=0;el("rows").replaceChildren();el("stats").textContent="No data loaded.";el("analyticsBox").textContent="Select Refresh analytics.";el("detail").hidden=true;el("status").textContent="Token cleared.";el("more").disabled=true};
+})();</script></body></html>
